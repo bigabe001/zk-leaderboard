@@ -40,29 +40,34 @@ function App() {
   };
 
   const connectWallet = async () => {
-    try {
-      // 1. Try to find the extension 3 times over 1.5 seconds
-      let freighter = null;
-      for (let i = 0; i < 3; i++) {
-        freighter = window.freighter || window.starkey?.freighter;
-        if (freighter) break;
-        await new Promise(r => setTimeout(r, 500));
+    // 1. Listen for the 'freighterReady' event if it hasn't loaded yet
+    const requestKey = async (provider) => {
+      try {
+        const pk = await provider.getPublicKey();
+        if (pk) setUserAddress(pk);
+      } catch (e) {
+        console.error("User rejected connection");
       }
-  
-      if (!freighter) {
-        alert("Freighter not detected! \n\n1. Unlock your wallet extension \n2. Make sure you aren't in Incognito \n3. Refresh this page.");
-        return;
-      }
-  
-      // 2. Trigger the actual popup
-      const publicKey = await freighter.getPublicKey();
+    };
+
+    // 2. Check if it's already there
+    if (window.freighter) {
+      await requestKey(window.freighter);
+    } else {
+      // 3. If not, wait for the window to tell us it's ready
+      alert("Searching for wallet... please wait 2 seconds.");
       
-      if (publicKey) {
-        setUserAddress(publicKey);
-      }
-    } catch (e) {
-      console.error("Detailed Connection Error:", e);
-      alert("Connection Error: " + e.message);
+      // Some versions use 'stellar-wallet-ready' or similar events
+      window.addEventListener("freighterReady", () => {
+        if (window.freighter) requestKey(window.freighter);
+      }, { once: true });
+
+      // Fallback: If it's still not found after 3 seconds, it's definitely blocked
+      setTimeout(() => {
+        if (!window.freighter) {
+          alert("Wallet still not found. Try disabling 'Brave Shields' or 'AdBlock' which might be blocking the script.");
+        }
+      }, 3000);
     }
   };
 
