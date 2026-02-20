@@ -16,27 +16,27 @@ function App() {
   const [startTime, setStartTime] = useState(null);
   const [sessionScore, setSessionScore] = useState(0);
 
+  // --- PAGINATION STATES ---
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 4;
+
   const formatAddress = (addr) => {
     if (!addr) return '...';
-    return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
+    return `${addr.slice(0, 4)}...${addr.slice(-4)}`.toUpperCase();
   };
 
-  // Helper to generate the SHA-256 commitment the contract expects
   const generateCommitment = async (score, salt) => {
     const encoder = new TextEncoder();
-    // Convert score to bytes and combine with salt
     const scoreBytes = encoder.encode(score.toString());
     const combined = new Uint8Array(scoreBytes.length + salt.length);
     combined.set(scoreBytes);
     combined.set(salt, scoreBytes.length);
-    
     const hashBuffer = await window.crypto.subtle.digest('SHA-256', combined);
     return new Uint8Array(hashBuffer);
   };
 
   const handleAction = () => {
     if (!userAddress) return connectWallet();
-    
     if (gameState === 'IDLE') {
       setGameState('PLAYING');
       setStartTime(Date.now());
@@ -59,7 +59,6 @@ function App() {
       }
     } catch (e) {
       console.error("Albedo Connection Error:", e);
-      alert("Connection failed or cancelled.");
     }
   };
 
@@ -69,7 +68,6 @@ function App() {
       const server = new rpc.Server(RPC_URL);
       const contract = new Contract(CONTRACT_ID);
       const dummyAccount = new Account('GD6FH5RZT6UQH6U7TVBCTVXDHO7MAIMY757WDTQYRADN24G335NJI2K2', "0");
-
       const tx = new TransactionBuilder(dummyAccount, {
         fee: BASE_FEE.toString(),
         networkPassphrase: Networks.TESTNET,
@@ -77,7 +75,6 @@ function App() {
       .addOperation(contract.call('get_scores'))
       .setTimeout(0)
       .build();
-
       const response = await server.simulateTransaction(tx);
       if (response && response.result) {
         const rawData = scValToNative(response.result.retval) || [];
@@ -96,19 +93,15 @@ function App() {
       const server = new rpc.Server(RPC_URL);
       const contract = new Contract(CONTRACT_ID);
       const account = await server.getAccount(userAddress);
-
-      // --- ZK COMMITMENT GENERATION ---
       const saltBytes = window.crypto.getRandomValues(new Uint8Array(32));
       const publicHashBytes = await generateCommitment(sessionScore, saltBytes);
-      
       const args = [
         nativeToScVal(userAddress, { type: 'address' }),
         nativeToScVal(Number(sessionScore), { type: 'u32' }), 
         nativeToScVal(saltBytes, { type: 'bytes' }),
         nativeToScVal(publicHashBytes, { type: 'bytes' }),
-        nativeToScVal(new Uint8Array(64), { type: 'bytes' }) // Empty proof for now
+        nativeToScVal(new Uint8Array(64), { type: 'bytes' })
       ];
-
       let tx = new TransactionBuilder(account, {
         fee: "100000", 
         networkPassphrase: Networks.TESTNET,
@@ -119,55 +112,35 @@ function App() {
 
       console.log("Preparing transaction...");
       tx = await server.prepareTransaction(tx);
-
       console.log("Awaiting Albedo signature...");
-      const albedoRes = await albedo.tx({
-        xdr: tx.toXDR(),
-        network: 'testnet'
-      });
-
+      const albedoRes = await albedo.tx({ xdr: tx.toXDR(), network: 'testnet' });
       console.log("Submitting via Raw RPC...");
       const rpcResponse = await fetch(RPC_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "sendTransaction",
-          params: {
-            transaction: albedoRes.signed_envelope_xdr 
-          }
+          jsonrpc: "2.0", id: 1, method: "sendTransaction",
+          params: { transaction: albedoRes.signed_envelope_xdr }
         })
       });
-
       const rawResult = await rpcResponse.json();
-      
-      if (rawResult.error) {
-        throw new Error(`RPC Error: ${rawResult.error.message}`);
-      }
-
+      if (rawResult.error) throw new Error(rawResult.error.message);
       const txHash = rawResult.result.hash;
       console.log("Success! TX Hash:", txHash);
 
-      // Polling for confirmation
       let status = "PENDING";
       while (status === "PENDING" || status === "NOT_FOUND") {
         const poll = await server.getTransaction(txHash);
         status = poll.status;
         if (status === "SUCCESS") {
-          alert(`🏆 Score recorded!`);
           setGameState('IDLE');
           fetchScores();
           break;
-        } else if (status === "FAILED") {
-          throw new Error("Transaction failed on-chain.");
         }
         await new Promise(r => setTimeout(r, 2000));
       }
-
     } catch (err) {
       console.error("Frontend Error:", err);
-      alert("Submission Error: " + (err.message || "Check console"));
     } finally {
       setSubmitting(false);
     }
@@ -175,99 +148,150 @@ function App() {
 
   useEffect(() => { fetchScores(); }, []);
 
+  const indexOfLastItem = currentPage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentScores = scores.slice(indexOfFirstItem, indexOfLastItem);
+  const totalPages = Math.ceil(scores.length / itemsPerPage);
+
   return (
     <div className="dashboard-wrapper">
-      <div className="glass-card">
-        <header className="hero-section">
+      <div className="outer-container">
+        <div className="top-header">
           <div className="status-pill">LIVE ON TESTNET</div>
-          <h1 className="title">ZK LEADERBOARD</h1>
-          <p className="contract-id">CONTRACT: <span>{CONTRACT_ID}</span></p>
-          
-          <div style={{ marginTop: '20px' }}>
+          <h1 className="main-title">ZK LEADERBOARD</h1>
+        </div>
+
+        <div className="glass-card">
+          <div className="contract-display">
+            CONTRACT: <span>{CONTRACT_ID}</span>
+          </div>
+
+          <div className="wallet-section">
             {userAddress ? (
               <span className="user-pill">{formatAddress(userAddress)}</span>
             ) : (
-              <button onClick={connectWallet} className="connect-btn">CONNECT WALLET</button>
+              <button onClick={connectWallet} className="connect-wallet-btn">CONNECT WALLET</button>
             )}
           </div>
-        </header>
 
-        <section className="board-content">
-          {loading ? (
-            <div className="loading-state">
-              <div className="spinner"></div>
-              <p>Syncing Ledger...</p>
+          <div className="table-wrapper">
+            <div className="table-header">
+              <span className="col-rank">RANK</span>
+              <span className="col-player">PLAYER</span>
+              <span className="col-score">SCORE</span>
             </div>
-          ) : (
-            <div className="table-wrapper">
-              <div className="table-header">
-                <span className="col-rank">RANK</span>
-                <span className="col-player">PLAYER</span>
-                <span className="col-score">SCORE</span>
-              </div>
-              <div className="table-body">
-                {scores.length > 0 ? (
-                  scores.map((s, i) => (
-                    <div key={i} className="table-row">
-                      <span className="col-rank">#{i + 1}</span>
-                      <span className="col-player">{formatAddress(s.user)}</span>
-                      <span className="col-score">{Number(s.score)}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="empty-state">No rankings available yet.</div>
-                )}
-              </div>
+            <div className="table-body">
+              {loading ? (
+                <div className="loading-state">Loading...</div>
+              ) : currentScores.length > 0 ? (
+                currentScores.map((s, i) => (
+                  <div key={i} className="table-row">
+                    <span className="col-rank">#{indexOfFirstItem + i + 1}</span>
+                    <span className="col-player">{formatAddress(s.user)}</span>
+                    <span className="col-score">{Number(s.score)}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state">No rankings yet.</div>
+              )}
             </div>
-          )}
-        </section>
+          </div>
 
-        <footer className="action-area">
-          <button 
-            onClick={handleAction} 
-            className="glow-button"
-            disabled={submitting}
-          >
-            {submitting ? 'VALIDATING PROOF...' : 
-             !userAddress ? 'CONNECT TO PLAY' :
-             gameState === 'IDLE' ? 'START NEW GAME' :
-             gameState === 'PLAYING' ? 'FINISH GAME' : `SUBMIT SCORE (${sessionScore})`}
-          </button>
-          
-          <button onClick={fetchScores} style={{ background: 'none', border: 'none', color: 'white', opacity: 0.4, marginTop: '15px', cursor: 'pointer', width: '100%', textDecoration: 'underline' }}>
-              Refresh Data
-          </button>
-        </footer>
+          <div className="pagination-controls">
+            <button 
+              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} 
+              disabled={currentPage === 1}
+              className="page-btn"
+            >PREV</button>
+            <span className="page-info">{currentPage} / {totalPages || 1}</span>
+            <button 
+              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} 
+              disabled={currentPage === totalPages || totalPages === 0}
+              className="page-btn active"
+            >NEXT</button>
+          </div>
+
+          <div className="footer-actions">
+            <button onClick={handleAction} className="main-action-btn" disabled={submitting}>
+              {submitting ? 'VALIDATING...' : 
+               !userAddress ? 'CONNECT TO PLAY' :
+               gameState === 'IDLE' ? 'START NEW GAME' :
+               gameState === 'PLAYING' ? 'FINISH GAME' : `SUBMIT SCORE (${sessionScore})`}
+            </button>
+            <button onClick={fetchScores} className="refresh-btn">Refresh Data</button>
+          </div>
+        </div>
       </div>
 
       <style>{`
-        :root { --neon: #00ff88; --bg: #050505; --glass: rgba(255, 255, 255, 0.03); --border: rgba(255, 255, 255, 0.12); }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { height: 100%; width: 100%; background: var(--bg); color: white; overflow-x: hidden; }
-        .dashboard-wrapper { min-height: 100vh; width: 100vw; display: flex; justify-content: center; align-items: center; padding: 20px; background: radial-gradient(circle at 50% 0%, #1a1a2e 0%, #050505 100%); font-family: 'Inter', sans-serif; }
-        .glass-card { width: 100%; max-width: 800px; background: var(--glass); backdrop-filter: blur(25px); border: 1px solid var(--border); border-radius: 24px; padding: clamp(20px, 5vw, 40px); box-shadow: 0 40px 100px rgba(0,0,0,0.8); }
-        .hero-section { text-align: center; margin-bottom: 32px; }
-        .status-pill { display: inline-block; font-size: 11px; background: var(--neon); color: black; padding: 5px 14px; border-radius: 100px; font-weight: 900; letter-spacing: 1.2px; margin-bottom: 12px; box-shadow: 0 0 15px rgba(0, 255, 136, 0.4); }
-        .title { font-size: clamp(2rem, 8vw, 3.5rem); font-weight: 900; letter-spacing: -2px; line-height: 1; }
-        .contract-id { font-size: clamp(10px, 2vw, 13px); opacity: 0.4; font-family: monospace; margin-top: 12px; word-break: break-all; }
-        .contract-id span { color: var(--neon); }
-        .user-pill { background: rgba(0, 255, 136, 0.1); border: 1px solid var(--neon); color: var(--neon); padding: 6px 12px; border-radius: 8px; font-family: monospace; font-size: 14px; }
-        .connect-btn { background: transparent; border: 1px solid var(--neon); color: var(--neon); padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.3s; }
-        .connect-btn:hover { background: var(--neon); color: black; }
-        .table-wrapper { width: 100%; background: rgba(0,0,0,0.3); border-radius: 16px; border: 1px solid var(--border); overflow: hidden; }
-        .table-header, .table-row { display: grid; grid-template-columns: 80px 1fr 100px; padding: 18px 24px; align-items: center; }
-        .table-header { background: rgba(255,255,255,0.04); font-size: 11px; font-weight: 800; color: #888; border-bottom: 1px solid var(--border); }
-        .table-row { border-bottom: 1px solid rgba(255,255,255,0.03); }
-        .col-rank { font-weight: 700; color: #555; font-size: 14px; }
-        .col-player { font-family: 'JetBrains Mono', monospace; font-size: 15px; opacity: 0.9; }
-        .col-score { text-align: right; color: var(--neon); font-weight: 900; font-size: 22px; }
-        .empty-state { text-align: center; padding: 60px; opacity: 0.4; }
-        .glow-button { width: 100%; margin-top: 32px; padding: 20px; border-radius: 16px; border: none; background: white; color: black; font-weight: 900; font-size: 16px; cursor: pointer; transition: 0.3s; }
-        .glow-button:hover { background: var(--neon); transform: translateY(-3px); box-shadow: 0 10px 30px rgba(0, 255, 136, 0.3); }
-        .glow-button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-        .spinner { width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.1); border-top: 4px solid var(--neon); border-radius: 50%; margin: 0 auto 20px; animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @media (max-width: 600px) { .table-header, .table-row { grid-template-columns: 50px 1fr 80px; padding: 14px 16px; } .col-player { font-size: 13px; } .col-score { font-size: 18px; } }
+        :root { --neon: #00ff88; --bg: #0b0b11; --card-bg: rgba(25, 25, 35, 0.4); --border: rgba(255, 255, 255, 0.08); }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+        body { background-color: var(--bg); color: white; }
+        
+        .dashboard-wrapper { 
+          min-height: 100vh; 
+          width: 100vw; 
+          display: flex; 
+          justify-content: center; 
+          align-items: center; 
+          padding: 40px 20px; 
+          overflow-x: hidden;
+        }
+        
+        .outer-container { 
+          width: 100%; 
+          max-width: 800px; 
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        }
+        
+        .top-header { text-align: center; margin-bottom: 30px; }
+        .status-pill { display: inline-block; background: var(--neon); color: black; font-size: 10px; font-weight: 900; padding: 4px 12px; border-radius: 50px; margin-bottom: 10px; text-transform: uppercase; }
+        .main-title { font-size: clamp(2.5rem, 6vw, 4rem); font-weight: 900; letter-spacing: -1px; text-transform: uppercase; }
+        
+        .glass-card { 
+          width: 100%;
+          background: var(--card-bg); 
+          border: 1px solid var(--border); 
+          border-radius: 20px; 
+          padding: 40px; 
+          box-shadow: 0 20px 50px rgba(0,0,0,0.3); 
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        }
+
+        .contract-display { font-size: 11px; color: #666; text-align: center; font-family: monospace; margin-bottom: 20px; overflow-wrap: break-word; width: 100%; }
+        .contract-display span { color: var(--neon); }
+        
+        .wallet-section { display: flex; justify-content: center; margin-bottom: 30px; width: 100%; }
+        .connect-wallet-btn { background: transparent; border: 1px solid var(--neon); color: var(--neon); padding: 8px 24px; border-radius: 6px; font-weight: 700; cursor: pointer; text-transform: uppercase; font-size: 14px; }
+        .user-pill { color: var(--neon); font-family: monospace; font-weight: 700; border: 1px solid var(--neon); padding: 8px 16px; border-radius: 6px; }
+
+        .table-wrapper { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 20px; background: rgba(0,0,0,0.2); width: 100%; }
+        .table-header { display: grid; grid-template-columns: 80px 1fr 120px; padding: 15px 25px; color: #555; font-size: 12px; font-weight: 700; border-bottom: 1px solid var(--border); }
+        .col-score { text-align: right; }
+        
+        .table-row { display: grid; grid-template-columns: 80px 1fr 120px; padding: 20px 25px; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.02); }
+        .col-rank { color: #444; font-weight: 700; }
+        .col-player { font-family: monospace; font-weight: 700; font-size: 14px; color: #ddd; }
+        .table-row .col-score { color: var(--neon); font-size: 24px; font-weight: 900; }
+
+        .pagination-controls { display: flex; justify-content: center; align-items: center; gap: 15px; margin-bottom: 30px; width: 100%; }
+        .page-btn { background: #1a1a24; border: 1px solid var(--border); color: #444; padding: 6px 16px; border-radius: 4px; font-weight: 700; font-size: 12px; cursor: pointer; }
+        .page-btn.active { color: white; border-color: #666; }
+        .page-info { font-size: 12px; color: #555; font-weight: 700; }
+
+        .footer-actions { display: flex; flex-direction: column; align-items: center; gap: 15px; width: 100%; }
+        .main-action-btn { width: 100%; background: white; color: black; border: none; padding: 18px; border-radius: 12px; font-weight: 800; font-size: 16px; cursor: pointer; text-transform: uppercase; }
+        .refresh-btn { background: none; border: none; color: #666; font-size: 12px; text-decoration: underline; cursor: pointer; }
+        
+        @media (max-width: 600px) {
+          .glass-card { padding: 20px; }
+          .table-header, .table-row { grid-template-columns: 50px 1fr 80px; padding: 15px; }
+          .table-row .col-score { font-size: 18px; }
+        }
       `}</style>
     </div>
   );
