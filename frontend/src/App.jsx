@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Contract, rpc, scValToNative, TransactionBuilder, Networks, BASE_FEE, Account } from '@stellar/stellar-sdk';
+import { Contract, rpc, scValToNative, nativeToScVal, TransactionBuilder, Networks, BASE_FEE, Account } from '@stellar/stellar-sdk';
 import albedo from '@albedo-link/intent';
 
 const CONTRACT_ID = 'CCZUIMRN3ZYXLRCGBTIROBEKZZXTBXUVOJGQCLBOA2FCBZXSXUAFKHIN';
@@ -12,7 +12,7 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
 
   // --- ZK & TIME STATES ---
-  const [gameState, setGameState] = useState('IDLE'); // IDLE, PLAYING, FINISHED
+  const [gameState, setGameState] = useState('IDLE'); 
   const [startTime, setStartTime] = useState(null);
   const [sessionScore, setSessionScore] = useState(0);
 
@@ -21,7 +21,19 @@ function App() {
     return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
   };
 
-  // --- GAME LOGIC ---
+  // Helper to generate the SHA-256 commitment the contract expects
+  const generateCommitment = async (score, salt) => {
+    const encoder = new TextEncoder();
+    // Convert score to bytes and combine with salt
+    const scoreBytes = encoder.encode(score.toString());
+    const combined = new Uint8Array(scoreBytes.length + salt.length);
+    combined.set(scoreBytes);
+    combined.set(salt, scoreBytes.length);
+    
+    const hashBuffer = await window.crypto.subtle.digest('SHA-256', combined);
+    return new Uint8Array(hashBuffer);
+  };
+
   const handleAction = () => {
     if (!userAddress) return connectWallet();
     
@@ -40,10 +52,7 @@ function App() {
 
   const connectWallet = async () => {
     try {
-      const res = await albedo.publicKey({
-        token: 'ZK-Leaderboard-Login'
-      });
-      
+      const res = await albedo.publicKey({ token: 'ZK-Leaderboard-Login' });
       if (res.pubkey) {
         setUserAddress(res.pubkey);
         console.log("Connected via Albedo:", res.pubkey);
@@ -87,43 +96,78 @@ function App() {
       const server = new rpc.Server(RPC_URL);
       const contract = new Contract(CONTRACT_ID);
       const account = await server.getAccount(userAddress);
-      
-      const randomSalt = window.crypto.getRandomValues(new Uint8Array(32))
-        .reduce((acc, b) => acc + b.toString(16).padStart(2, '0'), '');
 
-      // 1. Build the Transaction
-      const tx = new TransactionBuilder(account, {
-        fee: "10000",
+      // --- ZK COMMITMENT GENERATION ---
+      const saltBytes = window.crypto.getRandomValues(new Uint8Array(32));
+      const publicHashBytes = await generateCommitment(sessionScore, saltBytes);
+      
+      const args = [
+        nativeToScVal(userAddress, { type: 'address' }),
+        nativeToScVal(Number(sessionScore), { type: 'u32' }), 
+        nativeToScVal(saltBytes, { type: 'bytes' }),
+        nativeToScVal(publicHashBytes, { type: 'bytes' }),
+        nativeToScVal(new Uint8Array(64), { type: 'bytes' }) // Empty proof for now
+      ];
+
+      let tx = new TransactionBuilder(account, {
+        fee: "100000", 
         networkPassphrase: Networks.TESTNET,
       })
-      .addOperation(contract.call("submit_score", {
-        user: userAddress,
-        score: BigInt(sessionScore),
-        salt: randomSalt,
-        public_hash: "4e2624898495031b272f778912e8486018318685e1350a41f87900b9736c0d8f",
-        proof: "0".repeat(512)
-      }))
-      .setTimeout(0)
+      .addOperation(contract.call("submit_score", ...args))
+      .setTimeout(30)
       .build();
 
-      // 2. SIGN WITH ALBEDO (Replaces Freighter)
-      const res = await albedo.tx({
+      console.log("Preparing transaction...");
+      tx = await server.prepareTransaction(tx);
+
+      console.log("Awaiting Albedo signature...");
+      const albedoRes = await albedo.tx({
         xdr: tx.toXDR(),
         network: 'testnet'
       });
-      
-      const signedXdr = res.signed_envelope_xdr;
 
-      // 3. Send to Network
-      const response = await server.sendTransaction(signedXdr);
-      console.log("Transaction sent:", response);
+      console.log("Submitting via Raw RPC...");
+      const rpcResponse = await fetch(RPC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "sendTransaction",
+          params: {
+            transaction: albedoRes.signed_envelope_xdr 
+          }
+        })
+      });
+
+      const rawResult = await rpcResponse.json();
       
-      alert(`Score of ${sessionScore} submitted via Albedo!`);
-      setGameState('IDLE');
-      setTimeout(fetchScores, 5000);
+      if (rawResult.error) {
+        throw new Error(`RPC Error: ${rawResult.error.message}`);
+      }
+
+      const txHash = rawResult.result.hash;
+      console.log("Success! TX Hash:", txHash);
+
+      // Polling for confirmation
+      let status = "PENDING";
+      while (status === "PENDING" || status === "NOT_FOUND") {
+        const poll = await server.getTransaction(txHash);
+        status = poll.status;
+        if (status === "SUCCESS") {
+          alert(`🏆 Score recorded!`);
+          setGameState('IDLE');
+          fetchScores();
+          break;
+        } else if (status === "FAILED") {
+          throw new Error("Transaction failed on-chain.");
+        }
+        await new Promise(r => setTimeout(r, 2000));
+      }
+
     } catch (err) {
-      console.error("Submission error:", err);
-      alert("Failed to submit score: " + (err.message || "Unknown error"));
+      console.error("Frontend Error:", err);
+      alert("Submission Error: " + (err.message || "Check console"));
     } finally {
       setSubmitting(false);
     }
@@ -191,7 +235,7 @@ function App() {
           </button>
           
           <button onClick={fetchScores} style={{ background: 'none', border: 'none', color: 'white', opacity: 0.4, marginTop: '15px', cursor: 'pointer', width: '100%', textDecoration: 'underline' }}>
-             Refresh Data
+              Refresh Data
           </button>
         </footer>
       </div>
