@@ -41,20 +41,28 @@ function App() {
 
   const connectWallet = async () => {
     try {
-      let freighter = window.freighter || window.starkey?.freighter;
-      if (!freighter) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+      // 1. Try to find the extension 3 times over 1.5 seconds
+      let freighter = null;
+      for (let i = 0; i < 3; i++) {
         freighter = window.freighter || window.starkey?.freighter;
+        if (freighter) break;
+        await new Promise(r => setTimeout(r, 500));
       }
+  
       if (!freighter) {
-        alert("Freighter is not responding. Please unlock the extension and refresh.");
+        alert("Freighter not detected! \n\n1. Unlock your wallet extension \n2. Make sure you aren't in Incognito \n3. Refresh this page.");
         return;
       }
+  
+      // 2. Trigger the actual popup
       const publicKey = await freighter.getPublicKey();
-      if (publicKey) setUserAddress(publicKey);
+      
+      if (publicKey) {
+        setUserAddress(publicKey);
+      }
     } catch (e) {
-      console.error("Connection Error:", e);
-      alert("Connection failed: " + (e.message || "User rejected"));
+      console.error("Detailed Connection Error:", e);
+      alert("Connection Error: " + e.message);
     }
   };
 
