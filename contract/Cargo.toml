@@ -1,0 +1,27 @@
+[package]
+name = "zk_leaderboard"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = "20.0.0"
+
+[dev-dependencies]
+soroban-sdk = { version = "20.0.0", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[patch.crates-io]
+arbitrary = { git = "https://github.com/rust-fuzz/arbitrary", tag = "v1.3.2" }
+derive_arbitrary = { git = "https://github.com/rust-fuzz/arbitrary", tag = "v1.3.2" }
+
+# ADD THIS SECTION BELOW
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+lto = true
+panic = "abort"
