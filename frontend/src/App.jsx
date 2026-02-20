@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Contract, rpc, scValToNative, TransactionBuilder, Networks, BASE_FEE, Account } from '@stellar/stellar-sdk';
-import { isConnected } from '@stellar/freighter-api';
+import albedo from '@albedo-link/intent';
 
 const CONTRACT_ID = 'CCZUIMRN3ZYXLRCGBTIROBEKZZXTBXUVOJGQCLBOA2FCBZXSXUAFKHIN';
 const RPC_URL = 'https://soroban-testnet.stellar.org';
@@ -11,7 +11,7 @@ function App() {
   const [userAddress, setUserAddress] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // --- NEW ZK & TIME STATES ---
+  // --- ZK & TIME STATES ---
   const [gameState, setGameState] = useState('IDLE'); // IDLE, PLAYING, FINISHED
   const [startTime, setStartTime] = useState(null);
   const [sessionScore, setSessionScore] = useState(0);
@@ -29,9 +29,8 @@ function App() {
       setGameState('PLAYING');
       setStartTime(Date.now());
     } else if (gameState === 'PLAYING') {
-      // Calculate score based on time elapsed (e.g., higher score for faster completion)
       const timeTaken = Math.floor((Date.now() - startTime) / 1000);
-      const calculatedScore = Math.max(10, 1000 - timeTaken); // Example logic
+      const calculatedScore = Math.max(10, 1000 - timeTaken);
       setSessionScore(calculatedScore);
       setGameState('FINISHED');
     } else {
@@ -40,34 +39,18 @@ function App() {
   };
 
   const connectWallet = async () => {
-    // 1. Listen for the 'freighterReady' event if it hasn't loaded yet
-    const requestKey = async (provider) => {
-      try {
-        const pk = await provider.getPublicKey();
-        if (pk) setUserAddress(pk);
-      } catch (e) {
-        console.error("User rejected connection");
-      }
-    };
-
-    // 2. Check if it's already there
-    if (window.freighter) {
-      await requestKey(window.freighter);
-    } else {
-      // 3. If not, wait for the window to tell us it's ready
-      alert("Searching for wallet... please wait 2 seconds.");
+    try {
+      const res = await albedo.publicKey({
+        token: 'ZK-Leaderboard-Login'
+      });
       
-      // Some versions use 'stellar-wallet-ready' or similar events
-      window.addEventListener("freighterReady", () => {
-        if (window.freighter) requestKey(window.freighter);
-      }, { once: true });
-
-      // Fallback: If it's still not found after 3 seconds, it's definitely blocked
-      setTimeout(() => {
-        if (!window.freighter) {
-          alert("Wallet still not found. Try disabling 'Brave Shields' or 'AdBlock' which might be blocking the script.");
-        }
-      }, 3000);
+      if (res.pubkey) {
+        setUserAddress(res.pubkey);
+        console.log("Connected via Albedo:", res.pubkey);
+      }
+    } catch (e) {
+      console.error("Albedo Connection Error:", e);
+      alert("Connection failed or cancelled.");
     }
   };
 
@@ -105,17 +88,17 @@ function App() {
       const contract = new Contract(CONTRACT_ID);
       const account = await server.getAccount(userAddress);
       
-      // Generating a dynamic salt for the ZK proof
       const randomSalt = window.crypto.getRandomValues(new Uint8Array(32))
         .reduce((acc, b) => acc + b.toString(16).padStart(2, '0'), '');
 
+      // 1. Build the Transaction
       const tx = new TransactionBuilder(account, {
         fee: "10000",
         networkPassphrase: Networks.TESTNET,
       })
       .addOperation(contract.call("submit_score", {
         user: userAddress,
-        score: BigInt(sessionScore), // Using the time-calculated score
+        score: BigInt(sessionScore),
         salt: randomSalt,
         public_hash: "4e2624898495031b272f778912e8486018318685e1350a41f87900b9736c0d8f",
         proof: "0".repeat(512)
@@ -123,16 +106,24 @@ function App() {
       .setTimeout(0)
       .build();
 
-      const freighter = window.freighter || window.starkey?.freighter;
-      const signedXdr = await freighter.signTransaction(tx.toXDR(), { network: "TESTNET" });
-      await server.sendTransaction(signedXdr);
+      // 2. SIGN WITH ALBEDO (Replaces Freighter)
+      const res = await albedo.tx({
+        xdr: tx.toXDR(),
+        network: 'testnet'
+      });
       
-      alert(`Score of ${sessionScore} submitted!`);
+      const signedXdr = res.signed_envelope_xdr;
+
+      // 3. Send to Network
+      const response = await server.sendTransaction(signedXdr);
+      console.log("Transaction sent:", response);
+      
+      alert(`Score of ${sessionScore} submitted via Albedo!`);
       setGameState('IDLE');
       setTimeout(fetchScores, 5000);
     } catch (err) {
       console.error("Submission error:", err);
-      alert("Failed to submit score.");
+      alert("Failed to submit score: " + (err.message || "Unknown error"));
     } finally {
       setSubmitting(false);
     }
@@ -188,7 +179,6 @@ function App() {
         </section>
 
         <footer className="action-area">
-          {/* DYNAMIC ACTION BUTTON */}
           <button 
             onClick={handleAction} 
             className="glow-button"
